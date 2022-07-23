@@ -5,10 +5,13 @@
 #include <linux/sysfs.h>
 #include <linux/string.h>
 #include <linux/io.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
+
 #include "16c750_support.h"
 
 #define DEFAULT_BPS 115200
-#define UART2_BASE_PHYS_ADDR 0x48022000
+#define UART2_BASE_PHYS_ADDR 0x48024000
 #define UART2_REG_SIZE 0x1000
 
 static unsigned long bps_rate = DEFAULT_BPS;
@@ -109,11 +112,33 @@ static ssize_t loopback_store(struct device *dev, struct device_attribute *attr,
 // Linking the attribute to the show and store functions
 static DEVICE_ATTR(loopback, 0644, loopback_show, loopback_store); // 0644 allows Read and Write
 
+
+
+static const struct file_operations barrometer_fops = {
+	.read = barrometer_read,
+	.write = barrometer_write,
+	.open = barrometer_open,
+	.release = barrometer_release,
+
+};
+
+static struct miscdevice uart_arb_device = {
+	MISC_DYNAMIC_MINOR, "uart_loop", &barrometer_fops
+};
+
+
+
 // Binds the driver to the specific hardware device
 static int barrometer_probe(struct platform_device *pdev) {
     int retval;
 
     printk(KERN_INFO "uart_loop: Barrometer Probe Function called! \n");
+
+    retval = uart_init(); // Initialize the UART2
+    if (retval) {
+        printk(KERN_ERR "Failed to initialize UART2\n");
+        return retval;
+    }
 
     // Initialize the UART registers
     retval = init_uart_reg(); // Call to initialize the UART registers
@@ -121,11 +146,12 @@ static int barrometer_probe(struct platform_device *pdev) {
         printk(KERN_ERR "Failed to initialize UART registers\n");
         return retval;
     }
-
-    retval = uart_init(); // Initialize the UART2
+	
+    retval = misc_register(&uart_arb_device);
     if (retval) {
-        printk(KERN_ERR "Failed to initialize UART2\n");
-        return retval;
+	printk(KERN_ERR "Failed to register character Device\n");
+	uart_deinit();
+	return retval;
     }
 
     retval = device_create_file(&pdev->dev, &dev_attr_loopback); // Create sysfs file
@@ -143,11 +169,56 @@ static int barrometer_probe(struct platform_device *pdev) {
 
 static int barrometer_remove(struct platform_device *pdev) {
     printk(KERN_INFO "uart_loop: Barrometer Remove Function called! \n");
-    device_remove_file(&pdev->dev, &dev_attr_loopback); // Remove sysfs file
-    uart_deinit();
+    int retval;
+
+    retval = uart_deinit();
+    if (retval) {
+        printk(KERN_ERR "Failed to Deinitialize UART2\n");
+        return retval;
+    }
+
+    retval = device_remove_file(&pdev->dev, &dev_attr_loopback); // Remove sysfs file
+    if (retval) {
+        printk(KERN_ERR "uart_loop: Failed to remove sysfs file! \n");
+        uart_deinit();
+        return retval;
+    }
+
+    retval = misc_deregister(&uart_arb_device);
+    if (retval) {
+	printk(KERN_ERR "Failed to deregister character Device\n");
+	uart_deinit();
+	return retval;
+    }
+
+
     printk(KERN_INFO "uart_loop: Driver unbound successfully! \n");
     return 0;
 }
+
+
+static int barrometer_open(struct inode *inode, struct file *file){
+	printk(KERN_INFO "barrometer: device opened \n");
+	return 0;
+}
+
+static int barrometer_release(struct inode *inode, struct file *file){
+	printk(KERN_INFO "barrometer: device closed \n");
+	return 0;
+}
+
+static ssize_t barrometer_read(struct file *file, char __user *buf, size_t count, loff_t *offset) {
+	printk(KERN_INFO "barrometer: Read Operation not yet implemented \n");
+	return -1;
+}
+
+static ssize_t barrometer_write(struct file *file, const char __user *buf, size_t count, loff_t *offset) {
+	printk(KERN_INFO "barrometer: Write Operation not yet implemented \n");
+	return -1;
+}
+
+
+
 
 module_init(init_callback_fn);
 module_exit(exit_callback_fn);
