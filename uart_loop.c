@@ -5,6 +5,7 @@
 #include <linux/sysfs.h>
 #include <linux/string.h>
 #include <linux/io.h>
+#include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 
@@ -114,6 +115,61 @@ static DEVICE_ATTR(loopback, 0644, loopback_show, loopback_store); // 0644 allow
 
 
 
+
+static int barrometer_open(struct inode *inode, struct file *file){
+	printk(KERN_INFO "barrometer: device opened \n");
+	return 0;
+}
+
+static int barrometer_release(struct inode *inode, struct file *file){
+	printk(KERN_INFO "barrometer: device closed \n");
+	return 0;
+}
+
+static ssize_t barrometer_read(struct file *file, char __user *buf, size_t count, loff_t *offset) {
+
+    uint32_t val;
+    int retval;
+
+    // Wait for data to be received
+    do {
+        val = read_uart_reg(UART_RXFIFO_LVL_REG);
+    } while ((val & 0x1F) == 0); // Wait for non-zero
+
+    val = read_uart_reg(UART_RHR_REG); // Read received data
+    printk(KERN_INFO "Received value from RX FIFO = 0x%04x\n", val & 0x00FF);
+    printk(KERN_INFO "Copying 0x%04x to user: \n", val & 0x00FF);
+
+    retval = copy_to_user(buf, &val, 1);
+    if (retval != 0) {
+	printk(KERN_ERR "barrometer: failed to copy data to user space.\n");
+        return -EFAULT;
+    }
+
+    return 0;
+}
+
+
+
+static ssize_t barrometer_write(struct file *file, const char __user *buf, size_t count, loff_t *offset) {
+    uint32_t val; 
+    int retval; 
+
+    retval = copy_from_user(&val, buf, 1); // Copy byte from user space
+    if (retval != 0) {
+	printk(KERN_ERR "barrometer: failed to copy data from user space.\n");
+        return -EFAULT;
+    }
+
+    write_uart_reg_raw(UART_THR_REG, val & 0x00FF); // Write byte to the FIFO transmit register
+    printk(KERN_INFO "barrometer: Wrote one byte (0x%02x) to the UART transmit FIFO \n", val & 0x00FF);
+
+
+    return 0;
+}
+
+
+
 static const struct file_operations barrometer_fops = {
 	.read = barrometer_read,
 	.write = barrometer_write,
@@ -125,7 +181,6 @@ static const struct file_operations barrometer_fops = {
 static struct miscdevice uart_arb_device = {
 	MISC_DYNAMIC_MINOR, "uart_loop", &barrometer_fops
 };
-
 
 
 // Binds the driver to the specific hardware device
@@ -169,54 +224,14 @@ static int barrometer_probe(struct platform_device *pdev) {
 
 static int barrometer_remove(struct platform_device *pdev) {
     printk(KERN_INFO "uart_loop: Barrometer Remove Function called! \n");
-    int retval;
 
-    retval = uart_deinit();
-    if (retval) {
-        printk(KERN_ERR "Failed to Deinitialize UART2\n");
-        return retval;
-    }
-
-    retval = device_remove_file(&pdev->dev, &dev_attr_loopback); // Remove sysfs file
-    if (retval) {
-        printk(KERN_ERR "uart_loop: Failed to remove sysfs file! \n");
-        uart_deinit();
-        return retval;
-    }
-
-    retval = misc_deregister(&uart_arb_device);
-    if (retval) {
-	printk(KERN_ERR "Failed to deregister character Device\n");
-	uart_deinit();
-	return retval;
-    }
-
-
+    device_remove_file(&pdev->dev, &dev_attr_loopback); // Remove sysfs file
+    misc_deregister(&uart_arb_device);
+    uart_deinit();
+  
     printk(KERN_INFO "uart_loop: Driver unbound successfully! \n");
     return 0;
 }
-
-
-static int barrometer_open(struct inode *inode, struct file *file){
-	printk(KERN_INFO "barrometer: device opened \n");
-	return 0;
-}
-
-static int barrometer_release(struct inode *inode, struct file *file){
-	printk(KERN_INFO "barrometer: device closed \n");
-	return 0;
-}
-
-static ssize_t barrometer_read(struct file *file, char __user *buf, size_t count, loff_t *offset) {
-	printk(KERN_INFO "barrometer: Read Operation not yet implemented \n");
-	return -1;
-}
-
-static ssize_t barrometer_write(struct file *file, const char __user *buf, size_t count, loff_t *offset) {
-	printk(KERN_INFO "barrometer: Write Operation not yet implemented \n");
-	return -1;
-}
-
 
 
 
