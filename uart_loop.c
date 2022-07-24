@@ -8,15 +8,23 @@
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
+#include <linux/interrupt.h>
 
 #include "16c750_support.h"
 
 #define DEFAULT_BPS 115200
 #define UART2_BASE_PHYS_ADDR 0x48024000
 #define UART2_REG_SIZE 0x1000
+#define UART_IER_RHRIT 0x01
+#define UART_MDR1_DISABLE 0x07 // MDR1: 0000000000000111
+#define UART_IER_OFFSET 0x6c
+#define UART_MDR1_OFFSET 0x20
+
 
 static unsigned long bps_rate = DEFAULT_BPS;
 module_param(bps_rate, long, 0444);
+static int uart2_irq;
+
 
 struct barrometer_data {
     char loopback[16];
@@ -91,10 +99,14 @@ static void __exit exit_callback_fn(void) {
     platform_driver_unregister(&barrometer_driver); // Unregister the driver
 }
 
+
+
 // Read a Device Attribute Value
 static ssize_t loopback_show(struct device *dev, struct device_attribute *attr, char *buf) {
     return sprintf(buf, "%s\n", barrometer.loopback); // Show loopback status
 }
+
+
 
 // Write a Device Attribute Value
 static ssize_t loopback_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
@@ -127,11 +139,13 @@ static ssize_t barrometer_read(struct file *file, char __user *buf, size_t count
     uint8_t val;
     int retval;
 
-    // Wait for data to be received (consider adding a timeout mechanism)
+/*
+    // Wait for data to be received 
     uint32_t reg_val;
     do {
         reg_val = read_uart_reg_raw(UART_RXFIFO_LVL_REG);
     } while ((reg_val & 0x1F) == 0); // Wait for non-zero
+*/
 
     val = read_uart_reg_raw(UART_RHR_REG); // Read received data
     printk(KERN_INFO "Received value from RX FIFO = 0x%02x\n", val);
@@ -143,11 +157,12 @@ static ssize_t barrometer_read(struct file *file, char __user *buf, size_t count
         return -EFAULT;
     }
 
+    printk(KERN_INFO "Done Reading \n");
     return sizeof(val); // Return the number of bytes read
 }
 
 static ssize_t barrometer_write(struct file *file, const char __user *buf, size_t count, loff_t *offset) {
-    uint8_t val; // Use uint8_t for a single byte
+    uint8_t val; // single byte
     int retval;
 
     // Ensure we don't read more than 1 byte
@@ -179,11 +194,60 @@ static struct miscdevice uart_arb_device = {
     MISC_DYNAMIC_MINOR, "uart_loop", &barrometer_fops
 };
 
+
+static irqreturn_t uart2_isr(int irq, void *dev_id) {
+    printk(KERN_INFO "uart_loop: ISR called for UART2. \n");
+    return IRQ_NONE;
+}
+
+static irqreturn_t uart2_ist(int irq, void *dev_id) {
+    printk(KERN_INFO "uart_loop: IST called for UART2. \n");
+    return IRQ_NONE;
+}
+
+
+
+static void enable_uart2_interrupts(void __iomem *base) {
+	u32 ier_val;
+
+	ier_val = readl(base + UART_IER_OFFSET);
+	ier_val |= UART_IER_RHRIT;
+	writel(ier_val, base + UART_IER_OFFSET);
+    	printk(KERN_INFO "uart_loop: UART2 interrupt recieve enabled \n");
+}
+
+
+static void disable_uart2_interrupts(void __iomem *base) {
+	u32 ier_val;
+
+	ier_val = readl(base + UART_IER_OFFSET);
+	ier_val &= ~UART_IER_RHRIT;
+	writel(ier_val, base + UART_IER_OFFSET);
+
+	writel(UART_MDR1_DISABLE, base + UART_MDR1_OFFSET);
+
+    	printk(KERN_INFO "uart_loop: UART2 interrupt recieve disabled \n");
+}
+
+
 // Binds the driver to the specific hardware device
 static int barrometer_probe(struct platform_device *pdev) {
     int retval;
+	
+    enable_uart2_interrupts(barrometer.uart2_base);
 
     printk(KERN_INFO "uart_loop: Barrometer Probe Function called! \n");
+
+
+    uart2_irq = 74;
+
+    retval = request_threaded_irq(uart2_irq, uart2_isr, uart2_ist, 0, "uart_loop", &barrometer);
+    if (retval) {
+        printk(KERN_ERR "Failed to request IRQ for UART2\n");
+        return retval;
+    }
+
+    printk(KERN_INFO "uart_loop: Requested IRQ for UART2. \n");
 
     retval = uart_init(); // Initialize the UART2
     if (retval) {
@@ -198,6 +262,8 @@ static int barrometer_probe(struct platform_device *pdev) {
         return retval;
     }
     
+    uart_arb_device.parent = &pdev->dev;    
+
     retval = misc_register(&uart_arb_device);
     if (retval) {
         printk(KERN_ERR "Failed to register character Device\n");
@@ -221,6 +287,8 @@ static int barrometer_probe(struct platform_device *pdev) {
 static int barrometer_remove(struct platform_device *pdev) {
     printk(KERN_INFO "uart_loop: Barrometer Remove Function called! \n");
 
+    disable_uart2_interrupts(barrometer.uart2_base);
+    free_irq(uart2_irq, &barrometer);
     device_remove_file(&pdev->dev, &dev_attr_loopback); // Remove sysfs file
     misc_deregister(&uart_arb_device);
     uart_deinit();
