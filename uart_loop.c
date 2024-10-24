@@ -37,7 +37,7 @@ static struct platform_driver barrometer_driver = {
 };
 
 static int uart_init(void) {
-    barrometer.uart2_base = ioremap_nocache(UART2_BASE_PHYS_ADDR, UART2_REG_SIZE);
+    barrometer.uart2_base = ioremap_nocache(UART2_BASE_PHYS_ADDR, UART2_REG_SIZE); // Maps a physical address range into kernel's virtual memory
     if (!barrometer.uart2_base) {
         printk(KERN_ERR "Failed to map UART2 Registers \n");
         return -ENOMEM;
@@ -77,4 +77,75 @@ static u16 read_uart_reg_raw(u32 reg_offset) {
 // Initial Function called (__init)
 static int __init init_callback_fn(void) {
     printk(KERN_INFO "uart_loop: Module loaded successfully! \n");
-    printk(KERN_INFO "BPS_RATE = %lu \n", bps_rate
+    printk(KERN_INFO "BPS_RATE = %lu \n", bps_rate);
+    return platform_driver_register(&barrometer_driver); // Register the barrometer_driver struct
+}
+
+// Last Function called (__exit)
+static void __exit exit_callback_fn(void) {
+    printk(KERN_INFO "uart_loop: Module unloaded successfully! \n");
+    platform_driver_unregister(&barrometer_driver); // Unregister the driver
+}
+
+// Read a Device Attribute Value
+static ssize_t loopback_show(struct device *dev, struct device_attribute *attr, char *buf) {
+    return sprintf(buf, "%s\n", barrometer.loopback); // Show loopback status
+}
+
+// Write a Device Attribute Value
+static ssize_t loopback_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
+    if (strncmp(buf, "on", 2) == 0) {
+        strncpy(barrometer.loopback, "on", sizeof(barrometer.loopback));
+    } else if (strncmp(buf, "off", 3) == 0) {
+        strncpy(barrometer.loopback, "off", sizeof(barrometer.loopback));
+    } else {
+        return -EINVAL; // Invalid Argument Error Code
+    }
+
+    barrometer.loopback[sizeof(barrometer.loopback) - 1] = '\0'; // Set null character
+    return count;
+}
+
+// Linking the attribute to the show and store functions
+static DEVICE_ATTR(loopback, 0644, loopback_show, loopback_store); // 0644 allows Read and Write
+
+// Binds the driver to the specific hardware device
+static int barrometer_probe(struct platform_device *pdev) {
+    int retval;
+    
+    printk(KERN_INFO "uart_loop: Barrometer Probe Function called! \n");
+    
+    retval = uart_init();
+    if (retval) {
+        printk(KERN_ERR "Failed to initialize UART2\n");
+        return retval;
+    }
+
+    retval = device_create_file(&pdev->dev, &dev_attr_loopback); // Create sysfs file
+    if (retval) {
+        printk(KERN_ERR "uart_loop: Failed to create sysfs file! \n");
+        uart_deinit();
+        return retval;
+    }
+
+    strncpy(barrometer.loopback, "off", sizeof(barrometer.loopback)); // Default loopback status
+    printk(KERN_INFO "uart_loop: Driver bound successfully! \n");
+    
+    return 0;
+}
+
+static int barrometer_remove(struct platform_device *pdev) {
+    printk(KERN_INFO "uart_loop: Barrometer Remove Function called! \n");
+    device_remove_file(&pdev->dev, &dev_attr_loopback); // Remove sysfs file
+    uart_deinit();
+    printk(KERN_INFO "uart_loop: Driver unbound successfully! \n");
+    return 0;
+}
+
+module_init(init_callback_fn);
+module_exit(exit_callback_fn);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Cameron Frohar");
+MODULE_DESCRIPTION("Kernel module for UART loopback");
+MODULE_VERSION("1.0");
