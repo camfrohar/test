@@ -112,10 +112,17 @@ static DEVICE_ATTR(loopback, 0644, loopback_show, loopback_store); // 0644 allow
 // Binds the driver to the specific hardware device
 static int barrometer_probe(struct platform_device *pdev) {
     int retval;
-    
+
     printk(KERN_INFO "uart_loop: Barrometer Probe Function called! \n");
-    
-    retval = uart_init();
+
+    // Initialize the UART registers
+    retval = init_uart_reg(); // Call to initialize the UART registers
+    if (retval) {
+        printk(KERN_ERR "Failed to initialize UART registers\n");
+        return retval;
+    }
+
+    retval = uart_init(); // Initialize the UART2
     if (retval) {
         printk(KERN_ERR "Failed to initialize UART2\n");
         return retval;
@@ -130,7 +137,7 @@ static int barrometer_probe(struct platform_device *pdev) {
 
     strncpy(barrometer.loopback, "off", sizeof(barrometer.loopback)); // Default loopback status
     printk(KERN_INFO "uart_loop: Driver bound successfully! \n");
-    
+
     return 0;
 }
 
